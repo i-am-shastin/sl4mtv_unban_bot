@@ -14,25 +14,46 @@ use anyhow::{anyhow, Result};
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct DialogueState {
     pub total_requests: u8,
-    pub last_request_date: i64,
+    pub last_request_date: Option<DateTime<Utc>>,
     pub current_request: Option<Request>,
 }
 
 impl DialogueState {
     fn format_last_request_date(&self) -> String {
-        if self.last_request_date <= 0 {
-            return String::new();
+        if let Some(date) = self.last_request_date {
+            let duration = Utc::now().signed_duration_since(date);
+            let days = duration.num_days();
+            let hours = duration.num_hours() % 24;
+            let minutes = duration.num_minutes() % 60;
+            
+            let mut text = String::with_capacity(16);
+            if days > 0 {
+                text.push_str(&format!("{}д ", days));
+            }
+            if hours > 0 {
+                text.push_str(&format!("{}ч ", hours));
+            }
+            if minutes > 0 {
+                text.push_str(&format!("{}м", minutes));
+            }
+            
+            let duration_text = text.trim();
+            let duration_text = if duration_text.is_empty() {
+                "меньше минуты"
+            } else {
+                duration_text
+            };
+
+            format!(" С момента последнего обращения прошло {}.", duration_text)
+        } else {
+            String::new()
         }
-        
-        DateTime::<Utc>::from_timestamp(self.last_request_date, 0)
-            .map(|date| format!(" Последнее обращение было {}.", date.format("%d.%m.%Y в %H:%M")))
-            .unwrap_or_default()
     }
 
     pub fn format_request_info(&self) -> String {
         format!(
             "Пользователю нужна помощь с {}.\nПредыдущих запросов: {}.{}\n\nКаков вердикт?", 
-            self.current_request.as_ref().map(|r| r.request_type.to_string()).unwrap_or("WTF".to_string()), 
+            self.current_request.as_ref().map(|r| r.request_type.to_string()).unwrap_or("WTF_SHOULDNT_HAPPEN".to_string()), 
             self.total_requests, 
             self.format_last_request_date()
         )

@@ -239,7 +239,7 @@ async fn callback_handler(
     };
 
     if let Ok(mut user_state) = current_user_state.try_remove_request(&bot).await {
-        user_state.last_request_date = Utc::now().timestamp();
+        user_state.last_request_date = Some(Utc::now());
         user_state.total_requests = user_state.total_requests.saturating_add(1);
         storage.update_dialogue(chat_id, user_state).await?;
         info!("User {chat_id} requests data updated");
