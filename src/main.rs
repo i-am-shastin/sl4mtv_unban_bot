@@ -1,0 +1,257 @@
+pub mod types;
+pub mod variants;
+pub mod message;
+pub mod dialogue_state;
+pub mod request;
+pub mod config;
+
+use dptree::case;
+use log::{error, info, warn};
+
+use message::{MessageReaction, PlainMessage, Reaction};
+use teloxide::{
+    prelude::*,
+    dispatching::dialogue::{
+        self, serializer::Json, ErasedStorage, SqliteStorage, Storage
+    },
+    types::ReplyParameters,
+    utils::command::BotCommands
+};
+use chrono::Utc;
+use dialogue_state::DialogueState;
+use request::{RequestDecision, RequestType};
+use config::Config;
+use types::{AdminCallbackData, HandlerResult, MyDialogue, MyStorage};
+
+#[derive(Clone, BotCommands)]
+#[command(rename_rule = "lowercase")]
+pub enum Command {
+    Start,
+    Cancel,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    log4rs::init_file("log4rs.yaml", Default::default())?;
+    info!("{}", "-".repeat(50));
+    info!("Booting up");
+
+    dotenvy::dotenv_override()?;
+
+    let bot = Bot::from_env();
+    let bot_name = bot.get_my_name().await?.name;
+    info!("{bot_name} is running");
+
+    let config = Config::from_env()?;
+    if config.admins.is_empty() {   
+        return Err(anyhow::anyhow!("No admins found. Do you have ADMIN_CHAT_ID in environment variables?"));
+    }
+
+    let storage: MyStorage = SqliteStorage::open(&config.db_filename, Json).await.unwrap().erase();
+    info!("Bot admins are: {:?}, database loaded from: {}", config.admins, config.db_filename);
+
+    let command_handler = teloxide::filter_command::<Command, _>()
+        .branch(case![Command::Start].endpoint(start))
+        .branch(case![Command::Cancel].endpoint(cancel));
+
+    let handler = dialogue::enter::<Update, ErasedStorage<DialogueState>, DialogueState, _>()
+        .branch(
+            Update::filter_message()
+                .branch(command_handler)
+                .branch(dptree::endpoint(on_message))
+        )
+        .branch(
+            Update::filter_callback_query().endpoint(callback_handler)
+        );
+
+    info!("Initializing update dispatcher");
+    Dispatcher::builder(bot, handler)
+        .dependencies(dptree::deps![storage, config.admins])
+        .enable_ctrlc_handler()
+        .build()
+        .dispatch()
+        .await;
+
+    info!("Shutting down");
+    Ok(())
+}
+
+async fn start(
+    bot: Bot,
+    dialogue: MyDialogue,
+    state: DialogueState,
+    msg: Message,
+) -> HandlerResult {
+    let Some(user_id) = msg.from.as_ref().map(|user| user.id) else {
+        error!("Start command received but user has no id. Message: {:?}", msg);
+        return Ok(());
+    };
+
+    if state.has_sent_request() {
+        bot.send_message(msg.chat.id, variants::START_HAS_PENDING_REQUEST_MESSAGE()).await?;
+        info!("User {user_id} has pending request but tried to start again");
+        return Ok(())
+    }
+
+    if let Ok(new_state) = state.try_remove_request(&bot).await {
+        dialogue.update(new_state).await?;
+        info!("If user {user_id} had pending request, it is removed now");
+    }
+
+    bot.send_message(msg.chat.id, variants::START_INTRO_MESSAGE()).reply_markup(RequestType::get_keyboard()).await?;
+    info!("User {user_id} has started the bot");
+    Ok(())
+}
+
+async fn cancel(
+    bot: Bot,
+    dialogue: MyDialogue,
+    state: DialogueState,
+    msg: Message,
+) -> HandlerResult {
+    let user_id = msg.from.map_or(0, |user| user.id.0);
+
+    if state.current_request.is_none() {
+        bot.send_message(msg.chat.id, variants::CANCEL_NO_REQUEST_MESSAGE()).await?;
+        info!("User {user_id} tried to cancel request but there was no request to cancel");
+        return Ok(());
+    }
+
+    if !state.has_sent_request() {
+        bot.send_message(msg.chat.id, variants::CANCEL_REQUEST_IS_NOT_SENT_MESSAGE()).await?;
+        info!("User {user_id} tried to cancel request but request is still pending details from user");
+        return Ok(());
+    }
+
+    let user_message_id = state.current_request.as_ref().unwrap().user_message_id.unwrap();
+    if let Ok(new_state) = state.try_remove_request(&bot).await {
+        dialogue.update(new_state).await?;
+        info!("Request from {user_id} is cancelled, admin messages are deleted");
+    }
+    
+    bot.send_message(msg.chat.id, variants::CANCEL_COMPLETE_MESSAGE()).await?;
+    bot.react_to_message_with(msg.chat.id, user_message_id, Reaction::None).await?;
+    info!("User {user_id} cancelled request");
+    Ok(())
+}
+
+async fn on_message(
+    bot: Bot,
+    dialogue: MyDialogue,
+    state: DialogueState,
+    msg: Message,
+    admins: Vec<ChatId>,
+) -> HandlerResult {
+    if !msg.chat.is_private() {
+        return Ok(())
+    }
+
+    let user_id = msg.from.as_ref().map_or(0, |user| user.id.0);
+    if state.current_request.is_none() {
+        bot.send_message(msg.chat.id, variants::CURRENT_REQUEST_MISSING_MESSAGE()).await?;
+        info!("User {user_id} sent message without selecting request type");
+        return Ok(())
+    };
+
+    if state.has_sent_request() {
+        bot.send_message(msg.chat.id, variants::CURRENT_REQUEST_PENDING_MESSAGE()).await?;
+        info!("User {user_id} has pending request but sent another message");
+        return Ok(())
+    }
+
+    if !msg.is_plain_text() {
+        bot.send_message(msg.chat.id, variants::TYPE_NOT_SUPPORTED_MESSAGE()).reply_parameters(ReplyParameters::new(msg.id)).await?;
+        info!("User {user_id} sent non-plain text");
+        return Ok(())
+    }
+
+    if let Ok((new_state, sent_to)) = state.try_send_request(&bot, &msg, admins).await {
+        dialogue.update(new_state).await?;
+        bot.react_to_message_with(msg.chat.id, msg.id, Reaction::Pending).await?;
+        info!("User {user_id} request accepted and sent to these admins: {sent_to}");
+    } else {
+        warn!("User {user_id} request failed to send");
+    }
+
+    Ok(())
+}
+
+async fn callback_handler(
+    bot: Bot,
+    dialogue: MyDialogue,
+    state: DialogueState,
+    admins: Vec<ChatId>,
+    storage: MyStorage,
+    q: CallbackQuery,
+) -> HandlerResult {
+    let Some(ref query_data) = q.data else {
+        return Ok(())
+    };
+
+    bot.answer_callback_query(&q.id).await?;
+
+    if let Ok(request_type) = serde_json::from_str::<RequestType>(query_data) {
+        if state.has_sent_request() {
+            return Ok(())
+        }
+
+        if matches!(&state.current_request, Some(request) if request.request_type == request_type) {
+            info!("User {} re-selected request type {request_type} again", q.from.id);
+            return Ok(())
+        }
+
+        if let Ok(new_state) = state.try_edit_request(&bot, &request_type, dialogue.chat_id()).await {
+            dialogue.update(new_state).await?;
+            info!("User {} request type changed to {request_type}", q.from.id);
+            return Ok(())
+        }
+
+        match state.try_create_request(&bot, &request_type, dialogue.chat_id()).await {
+            Ok(new_state) => {
+                dialogue.update(new_state).await?;
+                info!("User {} selected request type: {request_type}", q.from.id);
+            },
+            Err(e) => {
+                warn!("User {} selected request type: {request_type} but request creation failed: {e}", q.from.id);
+            },
+        }
+
+        return Ok(())
+    }
+
+    if !admins.contains(&q.from.id.into()) {
+        return Ok(())
+    }
+
+    let Ok((decision, chat_id, message_id)) = serde_json::from_str::<AdminCallbackData>(query_data) else {
+        return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid admin callback data")));
+    };
+
+    let Some(current_user_state) = storage.clone().get_dialogue(chat_id).await? else {
+        warn!("User {chat_id} has no active dialogue");
+        return Ok(());
+    };
+
+    if let Ok(mut user_state) = current_user_state.try_remove_request(&bot).await {
+        user_state.last_request_date = Utc::now().timestamp();
+        user_state.total_requests = user_state.total_requests.saturating_add(1);
+        storage.update_dialogue(chat_id, user_state).await?;
+        info!("User {chat_id} requests data updated");
+    } else {
+        return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("User {chat_id} requests data failed to update"))));
+    }
+
+    let status = if decision == RequestDecision::Yes { Reaction::Accepted } else { Reaction::Declined };
+    info!("Admin {} set status {status} for request from user {chat_id}", q.from.id);
+
+    bot.react_to_message_with(chat_id, message_id, status).await?;
+    let text = if decision == RequestDecision::Yes {
+        variants::REQUEST_COMPLETE_ACCEPTED_MESSAGE()
+    } else {
+        variants::REQUEST_COMPLETE_DECLINED_MESSAGE()
+    };
+    bot.send_message(chat_id, text).await?;
+    info!("User {chat_id} received response message");
+
+    Ok(())
+}
