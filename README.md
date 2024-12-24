@@ -23,7 +23,11 @@ BOT_ADMINS=admin1_id,admin2_id # Comma-separated list of admin chat IDs
 DB_FILENAME=my_database.sqlite3 # Optional, defaults to db.sqlite
 ```
 
-3. Start the bot:
+3. Start the bot using
 ```bash
 cargo run --release
+```
+or
+```bash
+sh restart.sh
 ```

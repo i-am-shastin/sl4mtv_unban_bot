@@ -1,0 +1,2 @@
+pkill -SIGINT -f 'sl4mtv_unban_bot' && while pgrep -f 'sl4mtv_unban_bot'; do sleep 1; done;
+cargo run --release &
