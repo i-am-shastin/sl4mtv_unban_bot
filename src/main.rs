@@ -30,9 +30,15 @@ pub enum Command {
     Cancel,
 }
 
+const LOG4RS_CONFIG: &str = if cfg!(debug_assertions) {
+    "log4rs.debug.yaml"
+} else {
+    "log4rs.yaml"
+};
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    log4rs::init_file("log4rs.yaml", Default::default())?;
+    log4rs::init_file(LOG4RS_CONFIG, Default::default())?;
     info!("{}", "-".repeat(50));
     info!("Booting up");
 
