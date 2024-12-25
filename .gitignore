@@ -1,4 +1,6 @@
 /target
+/logs
 
 .env
 db.sqlite
+admin_db.sqlite
