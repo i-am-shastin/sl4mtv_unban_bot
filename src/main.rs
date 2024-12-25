@@ -4,9 +4,12 @@ pub mod message;
 pub mod dialogue_state;
 pub mod request;
 pub mod config;
+pub mod admin_storage;
 
 use dptree::case;
 use log::{error, info, warn};
+
+use std::sync::Arc;
 
 use message::{MessageReaction, PlainMessage, Reaction};
 use teloxide::{
@@ -18,6 +21,7 @@ use teloxide::{
     utils::command::BotCommands
 };
 use chrono::Utc;
+use admin_storage::AdminStorage;
 use dialogue_state::DialogueState;
 use request::{RequestDecision, RequestType};
 use config::Config;
@@ -49,12 +53,15 @@ async fn main() -> anyhow::Result<()> {
     info!("{bot_name} is running");
 
     let config = Config::from_env()?;
-    if config.admins.is_empty() {   
+    if config.admins.is_empty() {
         return Err(anyhow::anyhow!("No admins found. Do you have ADMIN_CHAT_ID in environment variables?"));
     }
 
     let storage: MyStorage = SqliteStorage::open(&config.db_filename, Json).await.unwrap().erase();
     info!("Bot admins are: {:?}, database loaded from: {}", config.admins, config.db_filename);
+
+    let admin_storage = AdminStorage::open(&config.admin_db_filename).await?;
+    info!("Admin database loaded from: {}", config.admin_db_filename);
 
     let command_handler = teloxide::filter_command::<Command, _>()
         .branch(case![Command::Start].endpoint(start))
@@ -72,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Initializing update dispatcher");
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![storage, config.admins])
+        .dependencies(dptree::deps![storage, admin_storage, config.admins])
         .enable_ctrlc_handler()
         .build()
         .dispatch()
@@ -147,36 +154,53 @@ async fn on_message(
     state: DialogueState,
     msg: Message,
     admins: Vec<ChatId>,
+    admin_storage: Arc<AdminStorage>,
 ) -> HandlerResult {
     if !msg.chat.is_private() {
         return Ok(())
     }
 
-    let user_id = msg.from.as_ref().map_or(0, |user| user.id.0);
+    let Some(user) = msg.from.as_ref() else {
+        return Ok(())
+    };
+
+    if admins.contains(&user.id.into()) {
+        match msg.reply_to_message() {
+            Some(reply) if reply.reply_markup().is_some() && msg.text().is_some() => {
+                admin_storage.save_admin_message(user.id, reply.id, msg.id, msg.text().unwrap()).await?;
+                bot.react_to_message_with(msg.chat.id, msg.id, Reaction::Okay).await?;
+            }
+            _ => {
+                bot.send_message(msg.chat.id, variants::ADMIN_MUST_REPLY_TO_REQUEST_MESSAGE()).await?;
+            }
+        }
+        return Ok(())
+    }
+
     if state.current_request.is_none() {
         bot.send_message(msg.chat.id, variants::CURRENT_REQUEST_MISSING_MESSAGE()).await?;
-        info!("User {user_id} sent message without selecting request type");
+        info!("User {} sent message without selecting request type", user.id);
         return Ok(())
     };
 
     if state.has_sent_request() {
         bot.send_message(msg.chat.id, variants::CURRENT_REQUEST_PENDING_MESSAGE()).await?;
-        info!("User {user_id} has pending request but sent another message");
+        info!("User {} has pending request but sent another message", user.id);
         return Ok(())
     }
 
     if !msg.is_plain_text() {
         bot.send_message(msg.chat.id, variants::TYPE_NOT_SUPPORTED_MESSAGE()).reply_parameters(ReplyParameters::new(msg.id)).await?;
-        info!("User {user_id} sent non-plain text");
+        info!("User {} sent non-plain text", user.id);
         return Ok(())
     }
 
     if let Ok((new_state, sent_to)) = state.try_send_request(&bot, &msg, admins).await {
         dialogue.update(new_state).await?;
         bot.react_to_message_with(msg.chat.id, msg.id, Reaction::Pending).await?;
-        info!("User {user_id} request accepted and sent to these admins: {sent_to}");
+        info!("User {} request accepted and sent to these admins: {sent_to}", user.id);
     } else {
-        warn!("User {user_id} request failed to send");
+        warn!("User {} request failed to send", user.id);
     }
 
     Ok(())
@@ -188,6 +212,7 @@ async fn callback_handler(
     state: DialogueState,
     admins: Vec<ChatId>,
     storage: MyStorage,
+    admin_storage: Arc<AdminStorage>,
     q: CallbackQuery,
 ) -> HandlerResult {
     let Some(ref query_data) = q.data else {
@@ -251,12 +276,21 @@ async fn callback_handler(
     info!("Admin {} set status {status} for request from user {chat_id}", q.from.id);
 
     bot.react_to_message_with(chat_id, message_id, status).await?;
-    let text = if decision == RequestDecision::Yes {
+
+    let mut base_text = if decision == RequestDecision::Yes {
         variants::REQUEST_COMPLETE_ACCEPTED_MESSAGE()
     } else {
         variants::REQUEST_COMPLETE_DECLINED_MESSAGE()
-    };
-    bot.send_message(chat_id, text).await?;
+    }.to_string();
+
+    if let Some(msg) = q.regular_message() {
+        if let Some((reply_msg_id, reply)) = admin_storage.get_admin_message(q.from.id, msg.id).await? {
+            base_text = format!("{}\n\nКомментарий администратора: {}", base_text, reply);
+            bot.delete_message(msg.chat.id, reply_msg_id).await?;
+        }
+    }
+
+    bot.send_message(chat_id, base_text).await?;
     info!("User {chat_id} received response message");
 
     Ok(())

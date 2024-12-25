@@ -5,6 +5,7 @@ use teloxide::types::ChatId;
 pub struct Config {
     pub admins: Vec<ChatId>,
     pub db_filename: String,
+    pub admin_db_filename: String,
 }
 
 impl Config {
@@ -12,6 +13,7 @@ impl Config {
         Ok(Self {
             admins: env::var("BOT_ADMINS")?.split(',').map(|id| id.parse::<i64>().map(|id| ChatId(id))).collect::<Result<Vec<ChatId>, _>>()?,
             db_filename: env::var("DB_FILENAME").unwrap_or("db.sqlite".to_string()),
+            admin_db_filename: env::var("ADMIN_DB_FILENAME").unwrap_or("admin_db.sqlite".to_string()),
         })
     }
 }

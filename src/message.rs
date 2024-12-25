@@ -1,12 +1,14 @@
+use crate::variants;
+
 use strum::Display;
 use teloxide::{payloads::SetMessageReaction, prelude::Requester, requests::JsonRequest, types::{ChatId, Message, MessageId, ReactionType}, Bot};
-use crate::variants;
 
 #[derive(Display, PartialEq)]
 pub enum Reaction {
     Pending,
     Accepted,
     Declined,
+    Okay,
     None
 }
 
@@ -30,6 +32,7 @@ impl MessageReaction for Bot {
                 Reaction::Pending => variants::emoji::REACTION_PENDING,
                 Reaction::Accepted => variants::emoji::REACTION_ACCEPTED,
                 Reaction::Declined => variants::emoji::REACTION_DECLINED,
+                Reaction::Okay => variants::emoji::REACTION_OKAY,
                 _ => unreachable!(),
             }.to_string();
 

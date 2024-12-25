@@ -4,7 +4,7 @@ A Telegram bot that manages unban requests from users and forwards them to admin
 
 ## Prerequisites
 
-- Rust 1.70 or higher
+- Rust 1.78 or higher
 - A Telegram Bot Token (obtained from [@BotFather](https://t.me/botfather))
 
 ## Installation
@@ -20,7 +20,8 @@ cd sl4mtv_unban_bot
 ```env
 TELOXIDE_TOKEN=your_bot_token_here
 BOT_ADMINS=admin1_id,admin2_id # Comma-separated list of admin chat IDs
-DB_FILENAME=my_database.sqlite3 # Optional, defaults to db.sqlite
+DB_FILENAME=path/to/dialogue_database.sqlite3 # Optional, defaults to db.sqlite
+ADMIN_DB_FILENAME=path/to/admin_database.sqlite3 # Optional, defaults to admin_db.sqlite
 ```
 
 3. Start the bot using

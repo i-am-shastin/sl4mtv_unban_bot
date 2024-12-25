@@ -116,6 +116,12 @@ message_variants!(
     "Мне нужен твой ник в Telegram. Кратко опиши ситуацию, если есть что добавить.",
 );
 
+message_variants!(
+    ADMIN_MUST_REPLY_TO_REQUEST_MESSAGE,
+    "Чтобы добавить комментарий, тебе нужно ответить текстом на сообщение с запросом, а затем нажать \"Принять\" или \"Отклонить\".",
+    "Для добавления комментария ответь текстом на сообщение с запросом и нажми \"Принять\" или \"Отклонить\".",
+);
+
 pub const BUTTON_ACCEPT_TEXT: &str = "Принять";
 pub const BUTTON_DECLINE_TEXT: &str = "Отклонить";
 
@@ -123,4 +129,5 @@ pub mod emoji {
     pub const REACTION_PENDING: &str = "🤔";
     pub const REACTION_ACCEPTED: &str = "👍";
     pub const REACTION_DECLINED: &str = "👎";
+    pub const REACTION_OKAY: &str = "👌";
 }
