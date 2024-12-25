@@ -16,6 +16,7 @@ pub struct DialogueState {
     pub total_requests: u8,
     pub last_request_date: Option<DateTime<Utc>>,
     pub current_request: Option<Request>,
+    pub is_banned: bool,
 }
 
 impl DialogueState {

@@ -17,7 +17,7 @@ use teloxide::{
     dispatching::dialogue::{
         self, serializer::Json, ErasedStorage, SqliteStorage, Storage
     },
-    types::ReplyParameters,
+    types::{MessageReactionUpdated, ReplyParameters},
     utils::command::BotCommands
 };
 use chrono::Utc;
@@ -73,9 +73,10 @@ async fn main() -> anyhow::Result<()> {
                 .branch(command_handler)
                 .branch(dptree::endpoint(on_message))
         )
-        .branch(
-            Update::filter_callback_query().endpoint(callback_handler)
-        );
+        .branch(Update::filter_callback_query().endpoint(callback_handler))
+        .branch(Update::filter_edited_message().endpoint(on_edit_message))
+        .branch(Update::filter_my_chat_member().endpoint(on_my_chat_member))
+        .branch(Update::filter_message_reaction_updated().endpoint(on_reaction_updated));
 
     info!("Initializing update dispatcher");
     Dispatcher::builder(bot, handler)
@@ -95,24 +96,34 @@ async fn start(
     state: DialogueState,
     msg: Message,
 ) -> HandlerResult {
-    let Some(user_id) = msg.from.as_ref().map(|user| user.id) else {
-        error!("Start command received but user has no id. Message: {:?}", msg);
+    let Some(user) = msg.from else {
+        error!("Start command received, but user is missing for some reason. Message: {:?}", msg);
         return Ok(());
     };
 
     if state.has_sent_request() {
         bot.send_message(msg.chat.id, variants::START_HAS_PENDING_REQUEST_MESSAGE()).await?;
-        info!("User {user_id} has pending request but tried to start again");
+        info!("User {} has pending request but tried to start again", user.id);
         return Ok(())
     }
 
-    if let Ok(new_state) = state.try_remove_request(&bot).await {
+    let was_banned = state.is_banned;
+    if state.current_request.is_some() || was_banned {
+        let mut new_state = state.clone();
+        new_state.current_request = None;
+        new_state.is_banned = false;
         dialogue.update(new_state).await?;
-        info!("If user {user_id} had pending request, it is removed now");
+        info!("User {} request cleared, bot was banned: {}", user.id, was_banned);
     }
 
-    bot.send_message(msg.chat.id, variants::START_INTRO_MESSAGE()).reply_markup(RequestType::get_keyboard()).await?;
-    info!("User {user_id} has started the bot");
+    let text = if was_banned {
+        variants::START_INTRO_MESSAGE_AFTER_BAN()
+    } else {
+        variants::START_INTRO_MESSAGE()
+    };
+
+    bot.send_message(msg.chat.id, text).reply_markup(RequestType::get_keyboard()).await?;
+    info!("{:?} has started the bot", user);
     Ok(())
 }
 
@@ -293,5 +304,45 @@ async fn callback_handler(
     bot.send_message(chat_id, base_text).await?;
     info!("User {chat_id} received response message");
 
+    Ok(())
+}
+
+async fn on_edit_message(
+    bot: Bot,
+    state: DialogueState,
+    msg: Message,
+) -> HandlerResult {
+    if !state.has_sent_request() || !msg.is_plain_text() {
+        return Ok(());
+    }
+
+    if let Some(request) = state.current_request.as_ref() {
+        if request.user_message_id.is_some_and(|id| id == msg.id) {
+            bot.send_message(msg.chat.id, variants::MESSAGE_EDITED_WARNING_MESSAGE()).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn on_reaction_updated(
+    bot: Bot,
+    reaction_update: MessageReactionUpdated,
+) -> HandlerResult {
+    bot.set_message_reaction(reaction_update.chat.id, reaction_update.message_id)
+        .reaction(reaction_update.new_reaction)
+        .await?;
+    Ok(())
+}
+
+async fn on_my_chat_member(
+    dialogue: MyDialogue,
+    state: DialogueState,
+    chat_update: ChatMemberUpdated,
+) -> HandlerResult {
+    if chat_update.new_chat_member.is_banned() {
+        let mut new_state = state.clone();
+        new_state.is_banned = true;
+        dialogue.update(new_state).await?;
+    }
     Ok(())
 }
