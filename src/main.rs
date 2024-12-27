@@ -11,7 +11,7 @@ use log::{error, info, warn};
 
 use std::sync::Arc;
 
-use message::{MessageReaction, PlainMessage, Reaction};
+use message::{MessageReaction, Reaction};
 use teloxide::{
     prelude::*,
     dispatching::dialogue::{
@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Initializing update dispatcher");
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![storage, admin_storage, config.admins])
+        .dependencies(dptree::deps![storage, admin_storage, config])
         .enable_ctrlc_handler()
         .build()
         .dispatch()
@@ -107,16 +107,15 @@ async fn start(
         return Ok(())
     }
 
-    let was_banned = state.is_banned;
-    if state.current_request.is_some() || was_banned {
+    if state.current_request.is_some() || state.is_banned {
         let mut new_state = state.clone();
         new_state.current_request = None;
         new_state.is_banned = false;
         dialogue.update(new_state).await?;
-        info!("User {} request cleared, bot was banned: {}", user.id, was_banned);
+        info!("User {} request cleared, bot was banned: {}", user.id, state.is_banned);
     }
 
-    let text = if was_banned {
+    let text = if state.is_banned {
         variants::START_INTRO_MESSAGE_AFTER_BAN()
     } else {
         variants::START_INTRO_MESSAGE()
@@ -133,29 +132,32 @@ async fn cancel(
     state: DialogueState,
     msg: Message,
 ) -> HandlerResult {
-    let user_id = msg.from.map_or(0, |user| user.id.0);
+    let Some(user) = msg.from else {
+        error!("Cancel command received, but user is missing for some reason. Message: {:?}", msg);
+        return Ok(());
+    };
 
     if state.current_request.is_none() {
         bot.send_message(msg.chat.id, variants::CANCEL_NO_REQUEST_MESSAGE()).await?;
-        info!("User {user_id} tried to cancel request but there was no request to cancel");
+        info!("User {} tried to cancel request but there was no request to cancel", user.id);
         return Ok(());
     }
 
     if !state.has_sent_request() {
         bot.send_message(msg.chat.id, variants::CANCEL_REQUEST_IS_NOT_SENT_MESSAGE()).await?;
-        info!("User {user_id} tried to cancel request but request is still pending details from user");
+        info!("User {} tried to cancel request but request is still pending details from user", user.id);
         return Ok(());
     }
 
     let user_message_id = state.current_request.as_ref().unwrap().user_message_id.unwrap();
     if let Ok(new_state) = state.try_remove_request(&bot).await {
         dialogue.update(new_state).await?;
-        info!("Request from {user_id} is cancelled, admin messages are deleted");
+        info!("Request from {} is cancelled, admin messages are deleted", user.id);
     }
     
     bot.send_message(msg.chat.id, variants::CANCEL_COMPLETE_MESSAGE()).await?;
     bot.react_to_message_with(msg.chat.id, user_message_id, Reaction::None).await?;
-    info!("User {user_id} cancelled request");
+    info!("User {} cancelled request", user.id);
     Ok(())
 }
 
@@ -164,7 +166,7 @@ async fn on_message(
     dialogue: MyDialogue,
     state: DialogueState,
     msg: Message,
-    admins: Vec<ChatId>,
+    config: Config,
     admin_storage: Arc<AdminStorage>,
 ) -> HandlerResult {
     if !msg.chat.is_private() {
@@ -175,7 +177,7 @@ async fn on_message(
         return Ok(())
     };
 
-    if admins.contains(&user.id.into()) {
+    if config.is_admin(user.id) {
         match msg.reply_to_message() {
             Some(reply) if reply.reply_markup().is_some() && msg.text().is_some() => {
                 admin_storage.save_admin_message(user.id, reply.id, msg.id, msg.text().unwrap()).await?;
@@ -200,13 +202,13 @@ async fn on_message(
         return Ok(())
     }
 
-    if !msg.is_plain_text() {
+    if msg.text().is_none() {
         bot.send_message(msg.chat.id, variants::TYPE_NOT_SUPPORTED_MESSAGE()).reply_parameters(ReplyParameters::new(msg.id)).await?;
         info!("User {} sent non-plain text", user.id);
         return Ok(())
     }
 
-    if let Ok((new_state, sent_to)) = state.try_send_request(&bot, &msg, admins).await {
+    if let Ok((new_state, sent_to)) = state.try_send_request(&bot, &msg, config.admins).await {
         dialogue.update(new_state).await?;
         bot.react_to_message_with(msg.chat.id, msg.id, Reaction::Pending).await?;
         info!("User {} request accepted and sent to these admins: {sent_to}", user.id);
@@ -221,7 +223,7 @@ async fn callback_handler(
     bot: Bot,
     dialogue: MyDialogue,
     state: DialogueState,
-    admins: Vec<ChatId>,
+    config: Config,
     storage: MyStorage,
     admin_storage: Arc<AdminStorage>,
     q: CallbackQuery,
@@ -261,7 +263,7 @@ async fn callback_handler(
         return Ok(())
     }
 
-    if !admins.contains(&q.from.id.into()) {
+    if !config.is_admin(q.from.id) {
         return Ok(())
     }
 
@@ -312,7 +314,7 @@ async fn on_edit_message(
     state: DialogueState,
     msg: Message,
 ) -> HandlerResult {
-    if !state.has_sent_request() || !msg.is_plain_text() {
+    if !state.has_sent_request() || msg.text().is_none() {
         return Ok(());
     }
 

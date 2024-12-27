@@ -1,7 +1,8 @@
 use std::env;
 use anyhow::Result;
-use teloxide::types::ChatId;
+use teloxide::types::{ChatId, UserId};
 
+#[derive(Clone)]
 pub struct Config {
     pub admins: Vec<ChatId>,
     pub db_filename: String,
@@ -15,5 +16,9 @@ impl Config {
             db_filename: env::var("DB_FILENAME").unwrap_or("db.sqlite".to_string()),
             admin_db_filename: env::var("ADMIN_DB_FILENAME").unwrap_or("admin_db.sqlite".to_string()),
         })
+    }
+
+    pub fn is_admin(&self, user_id: UserId) -> bool {
+        self.admins.contains(&user_id.into())
     }
 }

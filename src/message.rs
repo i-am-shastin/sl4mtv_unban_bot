@@ -1,7 +1,7 @@
 use crate::variants;
 
 use strum::Display;
-use teloxide::{payloads::SetMessageReaction, prelude::Requester, requests::JsonRequest, types::{ChatId, Message, MessageId, ReactionType}, Bot};
+use teloxide::{payloads::SetMessageReaction, prelude::Requester, requests::JsonRequest, types::{ChatId, MessageId, ReactionType}, Bot};
 
 #[derive(Display, PartialEq)]
 pub enum Reaction {
@@ -40,26 +40,5 @@ impl MessageReaction for Bot {
         }
 
         action
-    }
-}
-
-pub trait PlainMessage {
-    fn is_plain_text(&self) -> bool;
-}
-
-impl PlainMessage for Message {
-    fn is_plain_text(&self) -> bool {
-        self.text().is_some() 
-            && self.photo().is_none()
-            && self.video().is_none()
-            && self.audio().is_none()
-            && self.document().is_none()
-            && self.sticker().is_none()
-            && self.voice().is_none()
-            && self.story().is_none()
-            // Probably not needed
-            && self.caption().is_none()
-            && self.animation().is_none()
-            && self.video_note().is_none()
     }
 }
