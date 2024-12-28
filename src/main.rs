@@ -20,6 +20,7 @@ use teloxide::{
     types::{MessageReactionUpdated, ReplyParameters},
     utils::command::BotCommands
 };
+use anyhow::anyhow;
 use chrono::Utc;
 use admin_storage::AdminStorage;
 use dialogue_state::DialogueState;
@@ -150,10 +151,9 @@ async fn cancel(
     }
 
     let user_message_id = state.current_request.as_ref().unwrap().user_message_id.unwrap();
-    if let Ok(new_state) = state.try_remove_request(&bot).await {
-        dialogue.update(new_state).await?;
-        info!("Request from {} is cancelled, admin messages are deleted", user.id);
-    }
+    let new_state = state.try_remove_request(&bot).await;
+    dialogue.update(new_state).await?;
+    info!("Request from {} is cancelled, admin messages are deleted", user.id);
     
     bot.send_message(msg.chat.id, variants::CANCEL_COMPLETE_MESSAGE()).await?;
     bot.react_to_message_with(msg.chat.id, user_message_id, Reaction::None).await?;
@@ -268,7 +268,7 @@ async fn callback_handler(
     }
 
     let Ok((decision, chat_id, message_id)) = serde_json::from_str::<AdminCallbackData>(query_data) else {
-        return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid admin callback data")));
+        return Err(anyhow!("Invalid admin callback data").into());
     };
 
     let Some(current_user_state) = storage.clone().get_dialogue(chat_id).await? else {
@@ -276,14 +276,11 @@ async fn callback_handler(
         return Ok(());
     };
 
-    if let Ok(mut user_state) = current_user_state.try_remove_request(&bot).await {
-        user_state.last_request_date = Some(Utc::now());
-        user_state.total_requests = user_state.total_requests.saturating_add(1);
-        storage.update_dialogue(chat_id, user_state).await?;
-        info!("User {chat_id} requests data updated");
-    } else {
-        return Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("User {chat_id} requests data failed to update"))));
-    }
+    let mut user_state = current_user_state.try_remove_request(&bot).await;
+    user_state.last_request_date = Some(Utc::now());
+    user_state.total_requests = user_state.total_requests.saturating_add(1);
+    storage.update_dialogue(chat_id, user_state).await?;
+    info!("User {chat_id} requests data updated");
 
     let status = if decision == RequestDecision::Yes { Reaction::Accepted } else { Reaction::Declined };
     info!("Admin {} set status {status} for request from user {chat_id}", q.from.id);

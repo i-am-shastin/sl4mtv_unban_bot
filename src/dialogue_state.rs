@@ -1,5 +1,7 @@
 use crate::request::{AdminRequest, Request, RequestDecision, RequestType};
 
+use log::warn;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use teloxide::{
@@ -64,14 +66,17 @@ impl DialogueState {
         self.current_request.as_ref().is_some_and(|req| !req.sent_to.is_empty())
     }
 
-    pub async fn try_remove_request(&self, bot: &Bot) -> Result<DialogueState, RequestError> {
+    pub async fn try_remove_request(&self, bot: &Bot) -> DialogueState {
         let mut new_state = self.clone();
         if let Some(request) = new_state.current_request.take() {
             for admin_request in request.sent_to {
-                bot.delete_messages(admin_request.admin_chat_id, [admin_request.forwarded_message_id, admin_request.message_id]).await?;
+                let result = bot.delete_messages(admin_request.admin_chat_id, [admin_request.forwarded_message_id, admin_request.message_id]).await;
+                if result.is_err() {
+                    warn!("Unable to delete request message {} from admin {}", admin_request.message_id, admin_request.admin_chat_id);
+                }
             }
         }
-        Ok(new_state)
+        new_state
     }
 
     pub async fn try_edit_request(&self, bot: &Bot, request_type: &RequestType, chat_id: ChatId) -> Result<DialogueState> {
