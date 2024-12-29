@@ -144,4 +144,5 @@ pub mod emoji {
     pub const REACTION_ACCEPTED: &str = "👍";
     pub const REACTION_DECLINED: &str = "👎";
     pub const REACTION_OKAY: &str = "👌";
+    pub const REACTION_SALUTE: &str = "🫡";
 }

@@ -9,6 +9,7 @@ pub enum Reaction {
     Accepted,
     Declined,
     Okay,
+    Salute,
     None
 }
 
@@ -33,6 +34,7 @@ impl MessageReaction for Bot {
                 Reaction::Accepted => variants::emoji::REACTION_ACCEPTED,
                 Reaction::Declined => variants::emoji::REACTION_DECLINED,
                 Reaction::Okay => variants::emoji::REACTION_OKAY,
+                Reaction::Salute => variants::emoji::REACTION_SALUTE,
                 _ => unreachable!(),
             }.to_string();
 

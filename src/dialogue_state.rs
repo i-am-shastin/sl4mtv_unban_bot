@@ -1,4 +1,4 @@
-use crate::request::{AdminRequest, Request, RequestDecision, RequestType};
+use crate::{message::{MessageReaction, Reaction}, request::{AdminRequest, Request, RequestDecision, RequestType}};
 
 use log::warn;
 
@@ -72,7 +72,12 @@ impl DialogueState {
             for admin_request in request.sent_to {
                 let result = bot.delete_messages(admin_request.admin_chat_id, [admin_request.forwarded_message_id, admin_request.message_id]).await;
                 if result.is_err() {
-                    warn!("Unable to delete request message {} from admin {}", admin_request.message_id, admin_request.admin_chat_id);
+                    if bot.edit_message_reply_markup(admin_request.admin_chat_id, admin_request.message_id).await.is_err() {
+                        warn!("Unable to update inline keyboard for message {} from admin {}", admin_request.message_id, admin_request.admin_chat_id);
+                    }
+                    if bot.react_to_message_with(admin_request.admin_chat_id, admin_request.message_id, Reaction::Salute).await.is_err() {
+                        warn!("Unable to set reaction for message {} from admin {}", admin_request.message_id, admin_request.admin_chat_id);
+                    }
                 }
             }
         }
