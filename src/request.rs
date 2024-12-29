@@ -24,7 +24,10 @@ pub struct AdminRequest {
 pub enum RequestType {
     Twitch,
     YouTube,
+    #[strum(to_string = "Telegram (группа)")]
     Telegram,
+    #[strum(to_string = "Telegram (канал)")]
+    TelegramChannel,
 }
 
 impl RequestType {
@@ -32,24 +35,27 @@ impl RequestType {
         match self {
             RequestType::Twitch => variants::HELP_WITH_TWITCH_TEXT(),
             RequestType::YouTube => variants::HELP_WITH_YOUTUBE_TEXT(),
-            RequestType::Telegram => variants::HELP_WITH_TELEGRAM_TEXT(),
+            RequestType::Telegram | RequestType::TelegramChannel => variants::HELP_WITH_TELEGRAM_TEXT(),
         }
     }
 
     pub fn get_keyboard() -> InlineKeyboardMarkup {
-        InlineKeyboardMarkup::new(
-            vec![
-                RequestType::iter()
-                    .filter_map(|request_type| {
-                        serde_json::to_string(&request_type)
-                            .map(|callback_data| {
-                                InlineKeyboardButton::callback(request_type.to_string(), callback_data)
-                            })
-                            .ok()
+        let buttons: Vec<InlineKeyboardButton> = RequestType::iter()
+            .filter_map(|request_type| {
+                serde_json::to_string(&request_type)
+                    .map(|callback_data| {
+                        InlineKeyboardButton::callback(request_type.to_string(), callback_data)
                     })
-                    .collect::<Vec<_>>()
-            ]
-        )
+                    .ok()
+            })
+            .collect();
+
+        let keyboard: Vec<Vec<InlineKeyboardButton>> = buttons
+            .chunks(2)
+            .map(|chunk| chunk.to_vec())
+            .collect();
+
+        InlineKeyboardMarkup::new(keyboard)
     }
 }
 
