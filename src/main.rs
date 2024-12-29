@@ -278,6 +278,11 @@ async fn callback_handler(
         return Ok(());
     };
 
+    if current_user_state.current_request.is_none() {
+        warn!("User {chat_id} has no active request");
+        return Ok(());
+    }
+
     let mut user_state = current_user_state.try_remove_request(&bot).await;
     user_state.last_request_date = Some(Utc::now());
     user_state.total_requests = user_state.total_requests.saturating_add(1);
@@ -298,7 +303,13 @@ async fn callback_handler(
     if let Some(msg) = q.regular_message() {
         if let Some((reply_msg_id, reply)) = admin_storage.get_admin_message(q.from.id, msg.id).await? {
             base_text = format!("{}\n\nКомментарий администратора: {}", base_text, reply);
-            bot.delete_message(msg.chat.id, reply_msg_id).await?;
+            if bot.delete_message(msg.chat.id, reply_msg_id).await.is_err() {
+                if bot.react_to_message_with(msg.chat.id, reply_msg_id, Reaction::Salute).await.is_err() {
+                    error!("Unable to delete or set reaction for message {} from admin {}", reply_msg_id, msg.chat.id);
+                } else {
+                    warn!("Unable to delete reply message {} from admin {}, reaction set", reply_msg_id, msg.chat.id);
+                }
+            }
         }
     }
 
