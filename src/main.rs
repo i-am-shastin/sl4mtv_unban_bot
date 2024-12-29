@@ -50,8 +50,8 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv_override()?;
 
     let bot = Bot::from_env();
-    let bot_name = bot.get_my_name().await?.name;
-    info!("{bot_name} is running");
+    let bot_info = bot.get_me().await?;
+    info!("{} is running", bot_info.full_name());
 
     let config = Config::from_env()?;
     if config.admins.is_empty() {
@@ -108,15 +108,17 @@ async fn start(
         return Ok(())
     }
 
-    if state.current_request.is_some() || state.is_banned {
+    let bot_was_banned = state.is_banned.unwrap_or(false);
+
+    if state.current_request.is_some() || bot_was_banned {
         let mut new_state = state.clone();
         new_state.current_request = None;
-        new_state.is_banned = false;
+        new_state.is_banned = None;
         dialogue.update(new_state).await?;
-        info!("User {} request cleared, bot was banned: {}", user.id, state.is_banned);
+        info!("User {} request cleared, bot was banned: {}", user.id, bot_was_banned);
     }
 
-    let text = if state.is_banned {
+    let text = if bot_was_banned {
         variants::START_INTRO_MESSAGE_AFTER_BAN()
     } else {
         variants::START_INTRO_MESSAGE()
@@ -340,7 +342,7 @@ async fn on_my_chat_member(
 ) -> HandlerResult {
     if chat_update.new_chat_member.is_banned() {
         let mut new_state = state.clone();
-        new_state.is_banned = true;
+        new_state.is_banned = Some(true);
         dialogue.update(new_state).await?;
     }
     Ok(())
