@@ -8,6 +8,7 @@ use teloxide::{
     payloads::SendMessageSetters,
     prelude::Requester,
     types::{ChatId, Message, ReplyParameters},
+    ApiError,
     Bot,
     RequestError
 };
@@ -91,12 +92,18 @@ impl DialogueState {
 
     pub async fn try_edit_request(&self, bot: &Bot, request_type: &RequestType, chat_id: ChatId) -> Result<DialogueState> {
         if let Some(request) = &self.current_request {
-            if bot.edit_message_text(chat_id, request.bot_message_id, request_type.get_text()).await.is_ok() {
-                let mut new_state = self.clone();
-                new_state.current_request.as_mut().unwrap().request_type = request_type.clone();
-                Ok(new_state)
-            } else {
-                Err(anyhow!("Failed to edit message"))
+            match bot.edit_message_text(chat_id, request.bot_message_id, request_type.get_text()).await {
+                Ok(_) => {
+                    let mut new_state = self.clone();
+                    new_state.current_request.as_mut().unwrap().request_type = request_type.clone();
+                    Ok(new_state)
+                },
+                Err(RequestError::Api(ApiError::MessageNotModified))  => {
+                    Ok(self.clone())
+                },
+                Err(_e)  => {
+                    Err(anyhow!("Failed to edit message"))
+                },
             }
         } else {
             Err(anyhow!("Current request not found"))
