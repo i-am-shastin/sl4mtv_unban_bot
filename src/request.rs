@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, IntoEnumIterator};
 use teloxide::types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageId};
 
-use crate::{variants, types::AdminCallbackData};
+use crate::variants;
+use anyhow::Result;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -59,36 +60,27 @@ impl RequestType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq,EnumIter, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RequestDecision {
-    Yes,
-    No,
-}
-
-impl std::fmt::Display for RequestDecision {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RequestDecision::Yes => write!(f, "{}", variants::BUTTON_ACCEPT_TEXT),
-            RequestDecision::No => write!(f, "{}", variants::BUTTON_DECLINE_TEXT),
-        }
-    }
+    Yes((ChatId, i32)),
+    No((ChatId, i32)),
+    Ban((ChatId, i64)),
 }
 
 impl RequestDecision {
-    pub fn get_keyboard_for_message(msg: &Message) -> InlineKeyboardMarkup {
-        InlineKeyboardMarkup::new(
-            vec![
-                RequestDecision::iter()
-                    .filter_map(|request_decision| {
-                        let data: AdminCallbackData = (request_decision.clone(), msg.chat.id, msg.id);
-                        serde_json::to_string(&data)
-                            .map(|callback_data| {
-                                InlineKeyboardButton::callback(request_decision.to_string(), callback_data)
-                            })
-                            .ok()
-                    })
-                    .collect::<Vec<_>>()
-            ]
+    pub fn get_keyboard_for_message(msg: &Message) -> Result<InlineKeyboardMarkup> {
+        Ok(
+            InlineKeyboardMarkup::new(vec![
+                vec![
+                    InlineKeyboardButton::callback(variants::BUTTON_ACCEPT_TEXT, serde_json::to_string(&RequestDecision::Yes((msg.chat.id, msg.id.0)))?),
+                    InlineKeyboardButton::callback(variants::BUTTON_DECLINE_TEXT, serde_json::to_string(&RequestDecision::No((msg.chat.id, msg.id.0)))?)
+                ],
+                vec![
+                    InlineKeyboardButton::callback(variants::POST_BAN_BUTTON_7D_TEXT, serde_json::to_string(&RequestDecision::Ban((msg.chat.id, 7)))?),
+                    InlineKeyboardButton::callback(variants::POST_BAN_BUTTON_30D_TEXT, serde_json::to_string(&RequestDecision::Ban((msg.chat.id, 30)))?),
+                    InlineKeyboardButton::callback(variants::POST_BAN_BUTTON_INFINITE_TEXT, serde_json::to_string(&RequestDecision::Ban((msg.chat.id, 9999)))?),
+                ]
+            ])
         )
     }
 }

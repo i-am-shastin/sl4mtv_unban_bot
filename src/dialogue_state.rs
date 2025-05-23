@@ -19,6 +19,7 @@ pub struct DialogueState {
     pub last_request_date: Option<DateTime<Utc>>,
     pub current_request: Option<Request>,
     pub is_banned: Option<bool>,
+    pub has_ban_until: Option<DateTime<Utc>>,
 }
 
 impl DialogueState {
@@ -60,6 +61,10 @@ impl DialogueState {
             self.total_requests, 
             self.format_last_request_date()
         )
+    }
+
+    pub fn is_ban_active(&self) -> bool {
+        self.has_ban_until.is_some_and(|ban_until| ban_until > Utc::now())
     }
 
     pub fn has_sent_request(&self) -> bool {
@@ -122,7 +127,7 @@ impl DialogueState {
             };
             let Ok(message) = bot.send_message(admin_chat_id, &request_info_text)
                 .reply_parameters(ReplyParameters::new(forwarded_message.id))
-                .reply_markup(RequestDecision::get_keyboard_for_message(msg))
+                .reply_markup(RequestDecision::get_keyboard_for_message(msg)?)
                 .await else {
                     continue;
                 };

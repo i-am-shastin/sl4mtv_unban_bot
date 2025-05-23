@@ -17,16 +17,16 @@ use teloxide::{
     dispatching::dialogue::{
         self, serializer::Json, ErasedStorage, SqliteStorage, Storage
     },
-    types::{MessageReactionUpdated, ReplyParameters},
+    types::{InputFile, MessageId, MessageReactionUpdated, ReplyParameters},
     utils::command::BotCommands
 };
 use anyhow::anyhow;
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use admin_storage::AdminStorage;
 use dialogue_state::DialogueState;
 use request::{RequestDecision, RequestType};
 use config::Config;
-use types::{AdminCallbackData, HandlerResult, MyDialogue, MyStorage};
+use types::{HandlerResult, MyDialogue, MyStorage};
 
 #[derive(Clone, BotCommands)]
 #[command(rename_rule = "lowercase")]
@@ -40,6 +40,8 @@ const LOG4RS_CONFIG: &str = if cfg!(debug_assertions) {
 } else {
     "log4rs.yaml"
 };
+
+const STICKER_PREFIX: &str = "STICKER_ID:";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -102,6 +104,10 @@ async fn start(
         return Ok(());
     };
 
+    if state.is_ban_active() {
+        return Ok(())
+    }
+
     if state.has_sent_request() {
         bot.send_message(msg.chat.id, variants::START_HAS_PENDING_REQUEST_MESSAGE()).await?;
         info!("User {} has pending request but tried to start again", user.id);
@@ -139,6 +145,10 @@ async fn cancel(
         error!("Cancel command received, but user is missing for some reason. Message: {:?}", msg);
         return Ok(());
     };
+
+    if state.is_ban_active() {
+        return Ok(())
+    }
 
     if state.current_request.is_none() {
         bot.send_message(msg.chat.id, variants::CANCEL_NO_REQUEST_MESSAGE()).await?;
@@ -179,10 +189,23 @@ async fn on_message(
         return Ok(())
     };
 
+    if state.is_ban_active() {
+        return Ok(())
+    }
+
     if config.is_admin(user.id) {
         match msg.reply_to_message() {
-            Some(reply) if reply.reply_markup().is_some() && msg.text().is_some() => {
-                admin_storage.save_admin_message(user.id, reply.id, msg.id, msg.text().unwrap()).await?;
+            Some(reply) if reply.reply_markup().is_some() => {
+                let content = if let Some(text) = msg.text() {
+                    text.to_string()
+                } else if let Some(sticker) = msg.sticker() {
+                    format!("{STICKER_PREFIX}{}", sticker.file.id)
+                } else {
+                    bot.send_message(msg.chat.id, variants::UNSUPPORTED_REPLY_TYPE_TEXT).await?;
+                    return Ok(());
+                };
+
+                admin_storage.save_admin_message(user.id, reply.id, msg.id, &content).await?;
                 bot.react_to_message_with(msg.chat.id, msg.id, Reaction::Okay).await?;
             }
             _ => {
@@ -234,6 +257,10 @@ async fn callback_handler(
         return Ok(())
     };
 
+    if state.is_ban_active() {
+        return Ok(())
+    }
+
     bot.answer_callback_query(&q.id).await?;
 
     if let Ok(request_type) = serde_json::from_str::<RequestType>(query_data) {
@@ -269,8 +296,14 @@ async fn callback_handler(
         return Ok(())
     }
 
-    let Ok((decision, chat_id, message_id)) = serde_json::from_str::<AdminCallbackData>(query_data) else {
-        return Err(anyhow!("Invalid admin callback data").into());
+    let Ok(decision) = serde_json::from_str::<RequestDecision>(query_data) else {
+        return Err(anyhow!("Unknown admin decision data").into());
+    };
+
+    let chat_id = match decision {
+        RequestDecision::Yes((chat_id, _)) |
+        RequestDecision::No((chat_id, _)) |
+        RequestDecision::Ban((chat_id, _)) => chat_id,
     };
 
     let Some(current_user_state) = storage.clone().get_dialogue(chat_id).await? else {
@@ -286,23 +319,36 @@ async fn callback_handler(
     let mut user_state = current_user_state.try_remove_request(&bot).await;
     user_state.last_request_date = Some(Utc::now());
     user_state.total_requests = user_state.total_requests.saturating_add(1);
+
+    if let RequestDecision::Ban((chat_id, duration)) = decision {
+        user_state.has_ban_until = Some(Utc::now() + Duration::days(duration));
+        info!("Admin {} banned user {} for {} days", q.from.id, chat_id, duration);
+    }
+
     storage.update_dialogue(chat_id, user_state).await?;
-    info!("User {chat_id} requests data updated");
 
-    let status = if decision == RequestDecision::Yes { Reaction::Accepted } else { Reaction::Declined };
-    info!("Admin {} set status {status} for request from user {chat_id}", q.from.id);
+    if let RequestDecision::Yes((_, message_id)) | RequestDecision::No((_, message_id)) = decision {
+        let reaction = if matches!(decision, RequestDecision::Yes(_)) { Reaction::Accepted } else { Reaction::Declined };
+        info!("Admin {} {} request from user {}", q.from.id, reaction.to_string(), chat_id);
+    
+        bot.react_to_message_with(chat_id, MessageId(message_id), reaction).await?;
+    }
 
-    bot.react_to_message_with(chat_id, message_id, status).await?;
+    let mut response_text = match decision {
+        RequestDecision::Yes(_) => variants::REQUEST_COMPLETE_ACCEPTED_MESSAGE().to_string(),
+        RequestDecision::No(_) => variants::REQUEST_COMPLETE_DECLINED_MESSAGE().to_string(),
+        RequestDecision::Ban((_, duration)) => format!("{}\n\nБан будет снят через {} дней", variants::REQUEST_BAN_MESSAGE(), duration),
+    };
 
-    let mut base_text = if decision == RequestDecision::Yes {
-        variants::REQUEST_COMPLETE_ACCEPTED_MESSAGE()
-    } else {
-        variants::REQUEST_COMPLETE_DECLINED_MESSAGE()
-    }.to_string();
-
+    let mut sticker_id = None;
     if let Some(msg) = q.regular_message() {
         if let Some((reply_msg_id, reply)) = admin_storage.get_admin_message(q.from.id, msg.id).await? {
-            base_text = format!("{}\n\nКомментарий администратора: {}", base_text, reply);
+            if reply.starts_with(STICKER_PREFIX) {
+                sticker_id = Some(reply.strip_prefix(STICKER_PREFIX).unwrap().to_string());
+            } else {
+                response_text = format!("{}\n\nКомментарий администратора: {}", response_text, reply);
+            }
+            
             if bot.delete_message(msg.chat.id, reply_msg_id).await.is_err() {
                 if bot.react_to_message_with(msg.chat.id, reply_msg_id, Reaction::Salute).await.is_err() {
                     error!("Unable to delete or set reaction for message {} from admin {}", reply_msg_id, msg.chat.id);
@@ -313,8 +359,12 @@ async fn callback_handler(
         }
     }
 
-    bot.send_message(chat_id, base_text).await?;
+    bot.send_message(chat_id, response_text).await?;
     info!("User {chat_id} received response message");
+
+    if let Some(id) = sticker_id {
+        bot.send_sticker(chat_id, InputFile::file_id(id)).await?;
+    }
 
     Ok(())
 }
@@ -328,6 +378,10 @@ async fn on_edit_message(
         return Ok(());
     }
 
+    if state.is_ban_active() {
+        return Ok(())
+    }
+
     if let Some(request) = state.current_request.as_ref() {
         if request.user_message_id.is_some_and(|id| id == msg.id) {
             bot.send_message(msg.chat.id, variants::MESSAGE_EDITED_WARNING_MESSAGE()).await?;
@@ -338,8 +392,13 @@ async fn on_edit_message(
 
 async fn on_reaction_updated(
     bot: Bot,
+    state: DialogueState,
     reaction_update: MessageReactionUpdated,
 ) -> HandlerResult {
+    if state.is_ban_active() {
+        return Ok(())
+    }
+
     bot.set_message_reaction(reaction_update.chat.id, reaction_update.message_id)
         .reaction(reaction_update.new_reaction)
         .await?;
